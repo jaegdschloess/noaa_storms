@@ -1,0 +1,283 @@
+---
+title: 'Economic and population health impacts of NOAA storms'
+output: html_document
+---
+
+## Synopsis
+
+We'll address the following two questions:
+
+1. Across the United States, which types of storm events are most harmful with respect
+to population health?
+2. Across the United States, which types of storm events have the greatest economic 
+consequences?
+
+To investigate, we obtained data from the NOAA storm database.  We tidy up the data
+because the events were evidently entered in a free-form manner. From these data, 
+we found that floods and hurricanes have the greatest economic consequence, and
+that tornadoes and heat are the most harmful with respect to human health.
+
+
+## Data Processing
+
+### Obtaining the data
+We obtained the [NOAA storm database](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2), downloading it to a local directory. For purposes of this 
+assignment, we're asked to start from the the raw data file, not the url. In fact 
+the assessment specifically calls for the analysis to start from the original 
+.csv.bz2 file. For this reason, code for downloading the file is not shown.
+
+### Reading in the data
+R is able to read compressed archives directly, so the repdata-data-StormData.csv.bz2 
+file is not decompressed first.  The file data is loaded into an R data frame. 
+The stringsAsFactors argument is set to false because its arguably easier in R 
+to perform cleanup work with strings. Its reasonable to assume at this early 
+stage that at least some cleanup will occur.  Since the check.names arguments of 
+the read.table() function defaults to true, the variable names will be 
+syntically valid per R rules.
+
+
+```{r, echo=TRUE,cache=TRUE}
+ptm <- proc.time() # Start the clock
+storms <- read.table("repdata-data-StormData.csv.bz2",sep=",",
+                     stringsAsFactors=F,header=T,strip.white=T)
+proc.time() - ptm # Stop the clock and display the elapsed time
+```
+
+After loading the data, we inspect it it using our R "toolbox".
+
+```{r,echo=TRUE}
+dim(storms)
+head(storms)
+str(storms)
+evtype_cnt <- length(unique(storms$EVTYPE))
+```
+
+The columns we're interested in are the following, because they directly relate 
+to our two questions involving event types with greatest impact.
+
+Column Name   | Description
+------------- | -------------
+EVTYPE        | Storm Event Type
+FATALITIES    | Number of Fatalities
+INJURIES      | Number of Injuries
+CROPDMG       | Crop damage units. Paired with the units abbreviation CROPDMGEXP 
+CROPDMGEXP    | Crop damage unit abbreviation ( hundreds, thousands, millions or billions )
+PROPDMG       | Property damage units.  Paired with the units abbreviation PROPDMGEXP 
+PROPDMGEXP    | Property damage unit abbreviation ( hundreds, thousands, millions or billions )
+
+### Transforming the data
+
+The EVTYPE variable is critical for analysis since it contains the category of
+severe weather event. There are `r evtype_cnt` distinct raw values in the EVTYPE 
+variable. However, in the [NOAA storm database document](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf) , there are 48 identified severe 
+weather event categories.
+Because the EVTYPE variable is both essential and dirty, we attempt to clean it 
+up to match the standardized severe weather event categories.  The reason to clean 
+up the EVTYPE column is to provide sufficient grouping to the free-form event 
+types so we can get at the question of which event "types" are most damaging.
+
+The EVTYPE cleanup involves lower-casing, digit removal, leading/trailing 
+whitespace removal, and lastly, manual mapping. The reasons for adding all these
+transformations are similar. After each transformation to EVTYPE, the number of 
+unmatched storms drops. In terms of how much cleanup is good enough, we're 
+aiming to categorize enough events so that at least the top storm category for 
+both questions is known.
+
+```{r,echo=T}
+# create vector of standard event types.  We lowercase so we can compare more
+# easily to our free-form storm dataset event types
+standard_event_types <- tolower(c(
+    "Astronomical Low Tide","Avalanche","Blizzard","Coastal Flood",
+    "Cold/Wind Chill","Debris Flow","Dense Fog","Dense Smoke","Drought",
+    "Dust Devil","Dust Storm","Excessive Heat","Extreme Cold/Wind Chill",
+    "Flash Flood","Flood","Frost/Freeze","Funnel Cloud","Freezing Fog",
+    "Hail","Heat","Heavy Rain","Heavy Snow","High Surf","High Wind",
+    "Hurricane (Typhoon)","Ice Storm","Lake-Effect Snow","Lakeshore Flood",
+    "Lightning","Marine Hail","Marine High Wind","Marine Strong Wind",
+    "Marine Thunderstorm Wind","Rip Current","Seiche","Sleet","Storm Surge/Tide",
+    "Strong Wind","Thunderstorm Wind","Tornado","Tropical Depression",
+    "Tropical Storm","Tsunami","Volcanic Ash","Waterspout","Wildfire",
+    "Winter Storm","Winter Weather"
+))
+
+storms$EVTYPE <- tolower(storms$EVTYPE) # Lower case
+storms$EVTYPE <- gsub("\\d","",storms$EVTYPE) # Remove digits
+# Removing leading and trailing whitespace http://stackoverflow.com/questions/2261079/how-to-trim-leading-and-trailing-whitespace-in-r
+storms$EVTYPE <- gsub("^\\s+|\\s+$", "", storms$EVTYPE) # Remove trailing spaces
+# Take the remaining unmatched events, eye-ball the ones with a large number of 
+# events and hand code them to standard event names for those with obvious matches.
+storms[storms$EVTYPE == "marine tstm wind","EVTYPE"] <-
+    "marine thunderstorm wind"
+storms[storms$EVTYPE == "tstm wind","EVTYPE"] <-
+    "thunderstorm wind"
+storms[storms$EVTYPE == "thunderstorm winds","EVTYPE"] <-
+    "thunderstorm wind"
+storms[storms$EVTYPE == "extreme heat","EVTYPE"] <-
+    "heat"
+storms[storms$EVTYPE == "heat wave","EVTYPE"] <-
+    "heat"
+storms[storms$EVTYPE == "extreme cold","EVTYPE"] <-
+    "extreme cold/wind chill"
+
+# Circling back after calculating the monetary damages below, the most economically
+# damaging storms have EVTYPE values that don't match standard storms types. Because
+# of their significance ecnomically, such storms are manually categorized here using
+# a judgement call (e.g it seems reasonable to match "Storm Surge" to 
+# "Storm Surge/Tide".
+storms[storms$EVTYPE == "storm surge","EVTYPE"] <-
+    tolower("Storm Surge/Tide")
+storms[storms$EVTYPE == "hurricane/typhoon","EVTYPE"] <-
+    tolower("Hurricane (Typhoon)")
+storms[storms$EVTYPE == "hurricane","EVTYPE"] <-
+    tolower("Hurricane (Typhoon)")
+storms[storms$EVTYPE == "hurricane opal","EVTYPE"] <-
+    tolower("Hurricane (Typhoon)")
+storms[storms$EVTYPE == "heavy rain/severe weather","EVTYPE"] <-
+    tolower("Heavy Rain")
+storms[storms$EVTYPE == "river flood","EVTYPE"] <-
+    tolower("flood")
+
+# Create a STD_EVTYPE, which maps to NOAA standard storm type categories
+# and uses "other" for un-matching storms.
+storms$STD_EVTYPE <- ifelse(storms$EVTYPE %in% standard_event_types,
+                            storms$EVTYPE,"other")
+
+# Determine percentage of storms categorized
+pct_categorized <- 100 - (prop.table(table(storms$STD_EVTYPE))*100)[["other"]]
+```
+We finally concluded with `r pct_categorized`% of the storms categorized, which
+for purposes of this analysis, we'll assume to be a wide enough net to to capture
+the most damaging of events, either in population health or monetary terms. We'll 
+double check this assumption later on by checking the population health impact 
+and monetary value of uncategorized events.
+
+The CROPDMGEXP and PROPDMGEXP variables also contain dirty data. In page 12 of the 
+documentation, values of "h" for hundreds, "k" for thousands, "m" for millions,
+and "b" for billions are specified. The actual set of values is different
+from this specification.  
+
+```{r,echo=T,message=F}
+# plyr is used later by treemapify(), or at least that was the idea. If both 
+# plyr and dplyr are used they should be loaded in the following sequence.
+library(reshape2)
+library(plyr)
+library(dplyr)
+```
+
+```{r,echo=T}
+storms$STORM_COUNT <- 1
+# storms %>% group_by(tolower(PROPDMGEXP)) %>% summarize(storm_count=sum(STORM_COUNT))
+# storms %>% group_by(tolower(CROPDMGEXP)) %>% summarize(storm_count=sum(STORM_COUNT))
+```
+
+Since the number of events with nonstandard EXP values is small, for purposes of 
+this analysis, these values will be assumed to be "single". "single" means that 
+for those EXP observations not containg a standard unit abbreviation, the value 
+of the corresponding DMG column will be multiplied by one. Here, we create 
+PROPDMGAMT and CROPDMGAMT variables to contain calculated monetary damages. For 
+example, PROPDMGAMT is based on the raw variables PROPDMG and PROPDMGEXP.  These 
+monetary damages will be much easier to use than the raw multi-column values.
+
+```{r,echo=TRUE}
+storms$PROPDMGEXP <- tolower(storms$PROPDMGEXP)
+storms$CROPDMGEXP <- tolower(storms$CROPDMGEXP)
+
+# Create a list which maps between unit abbreviations and related powers of 10
+unit_abbreviations <- list(h=2,k=3,m=6,b=9,single=0)
+
+# Standardize *EXP columns to match unit list
+storms$PROPDMGEXP <- 
+    ifelse(storms$PROPDMGEXP %in% names(unit_abbreviations),storms$PROPDMGEXP,
+           "single")
+storms$CROPDMGEXP <- 
+    ifelse(storms$CROPDMGEXP %in% names(unit_abbreviations),storms$CROPDMGEXP,
+           "single")
+
+# Lookup unit abbreviations and raise 10 this power, then multiply 
+# by the related DMG column to arrive at monetary damages.
+storms$PROPDMGAMT <-
+    storms$PROPDMG * (10 ^ (unlist(unit_abbreviations[storms$PROPDMGEXP])))
+storms$CROPDMGAMT <-
+    storms$CROPDMG * (10 ^ (unlist(unit_abbreviations[storms$CROPDMGEXP])))
+
+```
+
+Now we have property and crop damages calculated. We then double check our 
+assumption that we have categorized "enough" of the storms to find the most
+damaging of events. 
+
+```{r,echo=TRUE}
+fatalities_by_type <- storms %>% group_by(STD_EVTYPE) %>% 
+    summarize(fatalities = sum(FATALITIES))
+fatalities_by_type <- mutate(fatalities_by_type,rnk = rank(-fatalities))
+
+injuries_by_type <- storms %>% group_by(STD_EVTYPE) %>% 
+    summarize(injuries = sum(INJURIES))
+injuries_by_type <- mutate(injuries_by_type,rnk = rank(-injuries))
+
+econ_dmg_by_type <- storms %>% group_by(STD_EVTYPE) %>% 
+    summarize(damages = sum(PROPDMGAMT + CROPDMGAMT))
+econ_dmg_by_type <- mutate(econ_dmg_by_type,rnk = rank(-damages))
+
+# with(fatalities_by_type,head(fatalities_by_type[order(-fatalities),]))
+uncategorized_fatalities_rnk <- with(fatalities_by_type,
+                  fatalities_by_type[STD_EVTYPE=="other",c("rnk")])$rnk
+
+# with(econ_dmg_by_type,head(econ_dmg_by_type[order(-damages),],8))
+uncategorized_damages_rnk <- with(econ_dmg_by_type,
+                  econ_dmg_by_type[STD_EVTYPE=="other",c("rnk")])$rnk
+
+# with(injuries_by_type,head(injuries_by_type[order(-injuries),],10))
+uncategorized_injuries_rnk <- with(injuries_by_type,
+                  injuries_by_type[STD_EVTYPE=="other",c("rnk")])$rnk
+```
+
+In terms of fatalities, the "other" category, which represents uncategorized 
+storms ranks `r uncategorized_fatalities_rnk` and for injuries, the "other" 
+category ranks `r uncategorized_injuries_rnk`, so our assumption is a safe one 
+to have made for the population health question.
+
+In terms of economic damages, the "other" category, which represents uncategorized 
+storms, initially ranked 1, so this was not a safe assumption to have made. 
+We'll revisit the storm categorization. After categorizing highly damaging 
+events with non-standard categorization, "other" category dropped to a 
+rank of  `r uncategorized_damages_rnk`, so we now assume to have categorized 
+enough events.
+
+## Results
+
+For purposes of determining relative "harm" to population health from a storm, 
+we assume the FATALITIES variable as a proxy for harm. Some consideration was 
+given to use of INJURIES variable as well, certainly an injury is harmful to 
+population health.  However, the relative "harm" of a FATALITY vs an INJURY is 
+difficult if not impossible to quantify given this data set.
+
+Here we produce a scatterplot of economic damage and harm to population health.
+Each point indicates the totals for a given standard EVTYPE.  Those points to
+the right are storm event types with the greatest harm to population health. 
+Those points to the top are event types with the greatest economic impact.
+
+```{r,echo=T,fig.width=10,fig.height=6}
+library(scales)
+library(ggplot2)
+storm_type_totals <- storms %>% group_by(STD_EVTYPE) %>% 
+    summarize(fatalities = sum(FATALITIES),damages = sum(PROPDMGAMT + CROPDMGAMT))
+p <- ggplot(data=storm_type_totals,aes(x=fatalities,y=damages))+
+    geom_point()+
+    geom_text(aes(label=STD_EVTYPE),size=4,vjust=1,hjust=0.25)+
+    xlab("Fatalities")+
+    scale_y_continuous(name="Economic Damages (USD)", labels = comma)+    
+    ggtitle("Harm to Population and enconomic impact of Severe Storms")
+print(p)
+```
+
+Across the United States, the types of event most harmful with respect
+to population health are 1) tornadoes and 2) excessive heat. 
+
+In terms of economic impact, we combined both property and crop damages. This
+combination of the two separate economic impacts is our measure of relative 
+economic impact.  From the above graph, we can see storm type with greatest 
+economic impact is flooding, with an economic toll of around $160 billion. 
+Hurricanes, and their associated storm surge, are the second most impactful 
+storm type.
+
